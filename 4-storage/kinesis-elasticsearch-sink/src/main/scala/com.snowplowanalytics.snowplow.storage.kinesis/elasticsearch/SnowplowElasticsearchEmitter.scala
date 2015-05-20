@@ -17,7 +17,8 @@
   * governing permissions and limitations there under.
   */
 
-package com.snowplowanalytics.snowplow.storage.kinesis.elasticsearch
+package com.snowplowanalytics.snowplow
+package storage.kinesis.elasticsearch
 
 // Amazon
 import com.amazonaws.services.kinesis.connectors.KinesisConnectorConfiguration
@@ -78,13 +79,22 @@ import org.apache.commons.logging.{
   LogFactory
 }
 
+// Tracker
+import scalatracker.Tracker
+import scalatracker.SelfDescribingJson
+
 // This project
 import sinks._
 
 /**
  * Class to send valid records to Elasticsearch and invalid records to Kinesis
  */
-class SnowplowElasticsearchEmitter(configuration: KinesisConnectorConfiguration, goodSink: Option[ISink], badSink: ISink)
+class SnowplowElasticsearchEmitter(
+  configuration: KinesisConnectorConfiguration,
+  goodSink: Option[ISink],
+  badSink: ISink,
+  tracker: Option[Tracker] = None)
+
   extends IEmitter[EmitterInput] {
 
   private val Log = LogFactory.getLog(getClass)
@@ -227,12 +237,14 @@ class SnowplowElasticsearchEmitter(configuration: KinesisConnectorConfiguration,
       bulkRequest.add(indexRequestBuilder)
     })))
 
+    val initialFailureTime = System.currentTimeMillis()
+
     /**
      * Keep attempting to execute the buldRequest until it succeeds
      *
      * @return List of inputs which Elasticsearch rejected
      */
-    @tailrec def attemptEmit(): List[EmitterInput] = {
+    @tailrec def attemptEmit(attemptNumber: Long = 1): List[EmitterInput] = {
       try {
         val bulkResponse = bulkRequest.execute.actionGet
         val responses = bulkResponse.getItems
@@ -265,12 +277,14 @@ class SnowplowElasticsearchEmitter(configuration: KinesisConnectorConfiguration,
           Log.error("No nodes found at " + elasticsearchEndpoint + ":" + elasticsearchPort + ". Retrying in "
             + BackoffPeriod + " milliseconds", nnae)
           sleep(BackoffPeriod)
-          attemptEmit()
+          sendFailureEvent(initialFailureTime, attemptNumber, nnae.toString)
+          attemptEmit(attemptNumber + 1)
         }
         case e: Exception => {
           Log.error("ElasticsearchEmitter threw an unexpected exception ", e)
           sleep(BackoffPeriod)
-          attemptEmit()
+          sendFailureEvent(initialFailureTime, attemptNumber, e.toString)
+          attemptEmit(attemptNumber + 1)
         }
       }
     }
@@ -329,6 +343,28 @@ class SnowplowElasticsearchEmitter(configuration: KinesisConnectorConfiguration,
     } else if (response.getStatus.equals(ClusterHealthStatus.GREEN)) {
       Log.info("Cluster health is GREEN.")
     }
+  }
+
+  /**
+   * If a tracker has been configured, send a sink_write_failed event
+   *
+   * @param failureCount the number of consecutive failed writes
+   * @param initialFailureTime Time of the first consecutive failed write
+   * @param message What went wrong
+   */
+  private def sendFailureEvent(
+    failureCount: Long,
+    initialFailureTime: Long,
+    message: String) {
+
+    tracker.foreach(_.trackUnstructEvent(SelfDescribingJson(
+      "iglu:com.snowplowanalytics.snowplow/sink_write_failed/jsonschema/1-0-0",
+      ("lastRetryPeriod" -> BackoffPeriod) ~
+      ("sink" -> "elasticsearch") ~
+      ("failureCount" -> failureCount) ~
+      ("initialFailureTime" -> initialFailureTime) ~
+      ("message" -> message)
+    )))
   }
 
 }
