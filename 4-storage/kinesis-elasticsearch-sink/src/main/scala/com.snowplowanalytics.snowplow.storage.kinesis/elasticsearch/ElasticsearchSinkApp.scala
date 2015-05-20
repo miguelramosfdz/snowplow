@@ -148,10 +148,23 @@ object ElasticsearchSinkApp extends App {
     err => throw new RuntimeException(err),
     exec => {
       tracker foreach {
-        t => t.trackUnstructEvent(SelfDescribingJson(
-          "iglu:com.snowplowanalytics.snowplow/application_initialized/jsonschema/1-0-0",
-          JObject(Nil)
-        ))
+        t => {
+          t.trackUnstructEvent(SelfDescribingJson(
+            "iglu:com.snowplowanalytics.snowplow/application_initialized/jsonschema/1-0-0",
+            JObject(Nil)
+          ))
+
+          Runtime.getRuntime.addShutdownHook(new Thread() {
+            override def run() {
+
+              // TODO: Should this block?
+              t.trackUnstructEvent(SelfDescribingJson(
+                "iglu:com.snowplowanalytics.snowplow/application_shutdown/jsonschema/1-0-0",
+                JObject(Nil)
+              ))
+            }
+          })
+        }
       }
       exec.run()
     }
