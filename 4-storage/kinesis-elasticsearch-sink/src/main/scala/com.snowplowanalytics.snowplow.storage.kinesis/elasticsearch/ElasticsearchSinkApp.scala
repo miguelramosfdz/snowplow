@@ -43,6 +43,11 @@ import org.json4s._
 import org.json4s.jackson.JsonMethods._
 import org.json4s.JsonDSL._
 
+// Tracker
+import com.snowplowanalytics.snowplow.scalatracker.Tracker
+import com.snowplowanalytics.snowplow.scalatracker.SelfDescribingJson
+import com.snowplowanalytics.snowplow.scalatracker.emitters.AsyncEmitter
+
 // This project
 import sinks._
 
@@ -95,6 +100,12 @@ object ElasticsearchSinkApp extends App {
   val documentIndex = location.getString("index")
   val documentType = location.getString("type")
 
+  val tracker = if (configValue.hasPath("monitoring.snowplow")) {
+    initializeTracker(configValue.getConfig("monitoring.snowplow")).some
+  } else {
+    None
+  }
+
   val executor = configValue.getString("source") match {
 
     // Read records from Kinesis
@@ -135,7 +146,15 @@ object ElasticsearchSinkApp extends App {
 
   executor.fold(
     err => throw new RuntimeException(err),
-    exec => exec.run()
+    exec => {
+      tracker foreach {
+        t => t.trackUnstructEvent(SelfDescribingJson(
+          "iglu:com.snowplowanalytics.snowplow/application_initialized/jsonschema/1-0-0",
+          JObject(Nil)
+        ))
+      }
+      exec.run()
+    }
   )
 
   /**
@@ -188,6 +207,22 @@ object ElasticsearchSinkApp extends App {
     props.setProperty(KinesisConnectorConfiguration.PROP_RETRY_LIMIT, "1")
 
     new KinesisConnectorConfiguration(props, CredentialsLookup.getCredentialsProvider(accessKey, secretKey))
+  }
+
+  def initializeTracker(config: Config): Tracker = {
+
+    val endpoint = config.getString("collector-uri")
+
+    val port = config.getInt("collector-port")
+
+    val appName = config.getString("app-id")
+
+    // Not yet used
+    val method = config.getString("method")
+
+    val emitter = AsyncEmitter.createAndStart(endpoint, port)
+
+    new Tracker(List(emitter), generated.Settings.name, appName)
   }
 
 }
