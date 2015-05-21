@@ -21,6 +21,8 @@ package com.snowplowanalytics.snowplow.storage.kinesis.elasticsearch
 // Java
 import java.io.File
 import java.util.Properties
+import java.util.Timer
+import java.util.TimerTask
 
 // Config
 import com.typesafe.config.{Config,ConfigFactory}
@@ -164,6 +166,19 @@ object ElasticsearchSinkApp extends App {
               ))
             }
           })
+
+          val HeartbeatInterval = 300000L
+
+          val heartbeatTimer = new Timer("heartbeatTimer")
+
+          heartbeatTimer.scheduleAtFixedRate(new TimerTask() {
+            override def run() {
+              t.trackUnstructEvent(SelfDescribingJson(
+                "iglu:com.snowplowanalytics.snowplow/heartbeat/jsonschema/1-0-0",
+                "interval" -> HeartbeatInterval
+              ))
+            }
+          }, 0, HeartbeatInterval)
         }
       }
       exec.run()
